@@ -1,4 +1,4 @@
-from flask import Flask, redirect, request, session, url_for 
+from flask import Flask, redirect, request, session, url_for
 import os
 import requests
 import json
@@ -6,10 +6,11 @@ from io import StringIO
 from google_auth_oauthlib.flow import Flow
 from convertdate import hebrew
 from datetime import datetime
+from collections import defaultdict
 
 app = Flask(__name__)
 app.secret_key = "super-dev-secret-key-for-testing-only"
-os.environ['OAUTHLIB_INSECURE_TRANSPORT'] = '1'  # For dev use only
+os.environ['OAUTHLIB_INSECURE_TRANSPORT'] = '1'
 
 app.config['SESSION_COOKIE_SECURE'] = True
 app.config['SESSION_COOKIE_HTTPONLY'] = True
@@ -20,6 +21,19 @@ SCOPES = [
     "openid",
     "https://www.googleapis.com/auth/userinfo.email",
     "https://www.googleapis.com/auth/userinfo.profile"
+]
+
+HOLIDAY_LINKS = [
+    {"label": "🎭 Purim", "day": 14, "month": 12},
+    {"label": "🇮🇱 Yom Ha'atzmaut", "day": 5, "month": 8},
+    {"label": "🕍 Yom Yerushalayim", "day": 28, "month": 2},
+    {"label": "📜 Shavuot", "day": 6, "month": 3},
+    {"label": "🌳 Tu BiShvat", "day": 15, "month": 11},
+    {"label": "🍎 Rosh Hashanah", "day": 1, "month": 7},
+    {"label": "🤍 Yom Kippur", "day": 10, "month": 7},
+    {"label": "🛖 Sukkot", "day": 15, "month": 7},
+    {"label": "🐸 Passover", "day": 15, "month": 1},
+    {"label": "🎖️ Yom HaZikaron", "day": 4, "month": 8},
 ]
 
 def create_flow():
@@ -98,7 +112,7 @@ def fetch_photos():
         return "<h2>Error fetching photos</h2><p>Try re-authenticating.</p>"
 
     photos = response.json().get("mediaItems", [])
-    matching_photos = []
+    hebrew_date_to_photos = defaultdict(list)
 
     for photo in photos:
         date = photo.get("mediaMetadata", {}).get("creationTime", "")[:10]
@@ -107,15 +121,38 @@ def fetch_photos():
         try:
             year, month, day = map(int, date.split("-"))
             photo_hebrew = hebrew.from_gregorian(year, month, day)
-            if photo_hebrew[1] == target_month and photo_hebrew[2] == target_day:
-                matching_photos.append({
-                    "url": photo["baseUrl"] + "=w400-h400",
-                    "date": date,
-                    "hebrew_date": f"{photo_hebrew[2]} {hebrew.MONTHS_HEB[photo_hebrew[1]]} {photo_hebrew[0]}"
-                })
+            h_year, h_month, h_day = photo_hebrew
+            key = (h_month, h_day)
+            hebrew_date_to_photos[key].append({
+                "url": photo["baseUrl"] + "=w400-h400",
+                "date": date,
+                "hebrew_date": f"{h_day} {hebrew.MONTHS_HEB[h_month]} {h_year}"
+            })
         except:
             continue
 
+    matching_photos = hebrew_date_to_photos.get((target_month, target_day), [])
+
+    # Suggestions
+    alt_suggestions = ""
+    count = 0
+    for (h_month, h_day), matches in sorted(hebrew_date_to_photos.items(), key=lambda x: -len(x[1])):
+        if (h_month, h_day) == (target_month, target_day):
+            continue
+        alt_suggestions += f"<li><a href='/photos?day={h_day}&month={h_month}'>{h_day} {hebrew.MONTHS_HEB[h_month]}</a> ({len(matches)} photo(s))</li>"
+        count += 1
+        if count >= 5:
+            break
+
+    alt_html = f"<h4>📅 Other Hebrew Dates with Photos:</h4><ul>{alt_suggestions}</ul>" if alt_suggestions else ""
+
+    # Holiday links
+    holiday_links_html = "<h4>📅 Explore Photos from Jewish Holidays:</h4><ul>"
+    for holiday in HOLIDAY_LINKS:
+        holiday_links_html += f"<li><a href='/photos?day={holiday['day']}&month={holiday['month']}'>{holiday['label']}</a></li>"
+    holiday_links_html += "</ul>"
+
+    # Dropdown
     month_dropdown = ""
     for i, name in enumerate(hebrew.MONTHS_HEB):
         if i == 0:
@@ -133,31 +170,6 @@ def fetch_photos():
 
     if not matching_photos:
         photo_html = "<p>No matches for that Hebrew date.</p>"
-
-        # Add suggestions of alternate Hebrew dates with photos
-        suggestions = []
-        seen_dates = set()
-        for photo in photos:
-            date = photo.get("mediaMetadata", {}).get("creationTime", "")[:10]
-            if not date:
-                continue
-            try:
-                year, month, day = map(int, date.split("-"))
-                h_y, h_m, h_d = hebrew.from_gregorian(year, month, day)
-                key = (h_m, h_d)
-                if key not in seen_dates:
-                    seen_dates.add(key)
-                    suggestions.append(f'<a href="/photos?day={h_d}&month={h_m}">{h_d} {hebrew.MONTHS_HEB[h_m]}</a>')
-                    if len(suggestions) >= 5:
-                        break
-            except:
-                continue
-
-        if suggestions:
-            photo_html += "<p>Try these dates with photos:</p><ul>"
-            for s in suggestions:
-                photo_html += f"<li>{s}</li>"
-            photo_html += "</ul>"
     else:
         photo_html = "<p>Photos taken on that Hebrew date:</p>"
         for p in matching_photos:
@@ -168,6 +180,8 @@ def fetch_photos():
         <h3>📅 Hebrew Date: {date_label}</h3>
         {form_html}
         {photo_html}
+        {alt_html}
+        {holiday_links_html}
         <br><a href='/logout'>🚪 Logout</a>
     """
 

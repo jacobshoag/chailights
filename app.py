@@ -1,20 +1,20 @@
 from flask import Flask, redirect, request, session, url_for
 import os
 import requests
+import json
+from io import StringIO
 from google_auth_oauthlib.flow import Flow
 from convertdate import hebrew
 from datetime import datetime
 
 app = Flask(__name__)
 app.secret_key = "super-dev-secret-key-for-testing-only"
-os.environ['OAUTHLIB_INSECURE_TRANSPORT'] = '1'
+os.environ['OAUTHLIB_INSECURE_TRANSPORT'] = '1'  # For dev use only
 
-app.config['SESSION_COOKIE_SECURE'] = False
+app.config['SESSION_COOKIE_SECURE'] = True
 app.config['SESSION_COOKIE_HTTPONLY'] = True
 app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
 
-CLIENT_SECRET_FILE = "client_secret_302588911248-331ltqb4hodno7no7kegoaqe32h7ijfb.apps.googleusercontent.com.json"
-REDIRECT_URI = "http://localhost:5000/oauth/callback"
 SCOPES = [
     "https://www.googleapis.com/auth/photoslibrary.readonly",
     "openid",
@@ -23,10 +23,15 @@ SCOPES = [
 ]
 
 def create_flow():
-    return Flow.from_client_secrets_file(
-        CLIENT_SECRET_FILE,
+    client_secret_content = os.environ.get("GOOGLE_CLIENT_SECRET_JSON")
+    if not client_secret_content:
+        raise Exception("Missing GOOGLE_CLIENT_SECRET_JSON in environment")
+
+    client_config = json.load(StringIO(client_secret_content))
+    return Flow.from_client_config(
+        client_config,
         scopes=SCOPES,
-        redirect_uri=REDIRECT_URI
+        redirect_uri="https://chailights.onrender.com/oauth/callback"
     )
 
 @app.route("/")
@@ -79,22 +84,21 @@ def fetch_photos():
     query_day = request.args.get("day", type=int)
     query_month = request.args.get("month", type=int)
 
-    today = datetime.now()
-    h_year, today_month, today_day = hebrew.from_gregorian(today.year, today.month, today.day)
-    target_day = query_day or today_day
-    target_month = query_month or today_month
-    date_label = f"{target_day} {hebrew.MONTHS_HEB[target_month]}"
-    if not query_day or not query_month:
-        date_label += " (Today)"
+    if query_day and query_month:
+        target_day = query_day
+        target_month = query_month
+        date_label = f"{target_day} {hebrew.MONTHS_HEB[target_month]}"
+    else:
+        today = datetime.now()
+        h_year, target_month, target_day = hebrew.from_gregorian(today.year, today.month, today.day)
+        date_label = f"{target_day} {hebrew.MONTHS_HEB[target_month]} (Today)"
 
-    # Fetch photos
     response = requests.get("https://photoslibrary.googleapis.com/v1/mediaItems?pageSize=100", headers=headers)
     if response.status_code != 200:
         return "<h2>Error fetching photos</h2><p>Try re-authenticating.</p>"
 
     photos = response.json().get("mediaItems", [])
     matching_photos = []
-    hebrew_date_counts = {}
 
     for photo in photos:
         date = photo.get("mediaMetadata", {}).get("creationTime", "")[:10]
@@ -102,15 +106,12 @@ def fetch_photos():
             continue
         try:
             year, month, day = map(int, date.split("-"))
-            h_year, h_month, h_day = hebrew.from_gregorian(year, month, day)
-            heb_key = (h_day, h_month)
-            hebrew_date_counts[heb_key] = hebrew_date_counts.get(heb_key, 0) + 1
-
-            if h_day == target_day and h_month == target_month:
+            photo_hebrew = hebrew.from_gregorian(year, month, day)
+            if photo_hebrew[1] == target_month and photo_hebrew[2] == target_day:
                 matching_photos.append({
                     "url": photo["baseUrl"] + "=w400-h400",
                     "date": date,
-                    "hebrew_date": f"{h_day} {hebrew.MONTHS_HEB[h_month]} {h_year}"
+                    "hebrew_date": f"{photo_hebrew[2]} {hebrew.MONTHS_HEB[photo_hebrew[1]]} {photo_hebrew[0]}"
                 })
         except:
             continue
@@ -137,19 +138,11 @@ def fetch_photos():
         for p in matching_photos:
             photo_html += f'<img src="{p["url"]}"><br><small>{p["date"]} / {p["hebrew_date"]}</small><br><br>'
 
-    # Add list of alternative Hebrew dates with photo counts
-    alt_html = "<h4>🗓️ Hebrew Dates with Your Photos:</h4><ul>"
-    for (d, m), count in sorted(hebrew_date_counts.items(), key=lambda x: -x[1])[:5]:
-        month_name = hebrew.MONTHS_HEB[m]
-        alt_html += f'<li><a href="/photos?day={d}&month={m}">{d} {month_name}</a> ({count} photo{"s" if count != 1 else ""})</li>'
-    alt_html += "</ul>"
-
     return f"""
         <h2>👋 Welcome, {user_name}!</h2>
         <h3>📅 Hebrew Date: {date_label}</h3>
         {form_html}
         {photo_html}
-        {alt_html}
         <br><a href='/logout'>🚪 Logout</a>
     """
 
@@ -159,4 +152,4 @@ def logout():
     return redirect(url_for("index"))
 
 if __name__ == "__main__":
-    app.run(host="localhost", port=5000, debug=True)
+    app.run(host="0.0.0.0", port=5000, debug=True)

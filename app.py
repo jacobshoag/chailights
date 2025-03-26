@@ -1,4 +1,4 @@
-from flask import Flask, redirect, request, session, url_for
+from flask import Flask, redirect, request, session, url_for 
 import os
 import requests
 import json
@@ -133,6 +133,31 @@ def fetch_photos():
 
     if not matching_photos:
         photo_html = "<p>No matches for that Hebrew date.</p>"
+
+        # Add suggestions of alternate Hebrew dates with photos
+        suggestions = []
+        seen_dates = set()
+        for photo in photos:
+            date = photo.get("mediaMetadata", {}).get("creationTime", "")[:10]
+            if not date:
+                continue
+            try:
+                year, month, day = map(int, date.split("-"))
+                h_y, h_m, h_d = hebrew.from_gregorian(year, month, day)
+                key = (h_m, h_d)
+                if key not in seen_dates:
+                    seen_dates.add(key)
+                    suggestions.append(f'<a href="/photos?day={h_d}&month={h_m}">{h_d} {hebrew.MONTHS_HEB[h_m]}</a>')
+                    if len(suggestions) >= 5:
+                        break
+            except:
+                continue
+
+        if suggestions:
+            photo_html += "<p>Try these dates with photos:</p><ul>"
+            for s in suggestions:
+                photo_html += f"<li>{s}</li>"
+            photo_html += "</ul>"
     else:
         photo_html = "<p>Photos taken on that Hebrew date:</p>"
         for p in matching_photos:

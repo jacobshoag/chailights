@@ -1,4 +1,3 @@
-# app/main.py
 from flask import Flask, redirect, request, session, url_for
 import os
 import requests
@@ -156,7 +155,6 @@ def get_all_photos(headers):
             break
     return photos
 
-@app.route("/photos")
 def get_holiday_for_date(h_month, h_day, outside_israel):
     extended = get_extended_holidays(outside_israel)
     for label, dates in extended.items():
@@ -164,6 +162,7 @@ def get_holiday_for_date(h_month, h_day, outside_israel):
             return label
     return None
 
+@app.route("/photos")
 def fetch_photos():
     if "credentials" not in session:
         return redirect(url_for("index"))

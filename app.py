@@ -155,11 +155,11 @@ def count_holiday_photos(photos, outside_israel=False):
     holiday_results = []
     
     for holiday, dates in holidays.items():
-        # Collect unique photos for this holiday's dates
+        # Collect unique photos for this holiday's dates using a set of unique identifiers
         holiday_photos = set()
         for month, day in dates:
             holiday_photos.update(
-                photo for photo in photos 
+                photo['_original_date'] for photo in photos 
                 if photo['_hebrew_month'] == month and photo['_hebrew_day'] == day
             )
         

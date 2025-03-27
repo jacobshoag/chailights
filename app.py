@@ -8,9 +8,8 @@ from convertdate import hebrew
 from datetime import datetime, timedelta
 import logging
 
+# Application Configuration
 app = Flask(__name__)
-
-# Secure secret key (for testing)
 app.secret_key = os.urandom(24)
 os.environ['OAUTHLIB_INSECURE_TRANSPORT'] = '1'
 
@@ -21,6 +20,7 @@ app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# OAuth Scopes
 SCOPES = [
     "https://www.googleapis.com/auth/photoslibrary.readonly",
     "openid",
@@ -28,23 +28,13 @@ SCOPES = [
     "https://www.googleapis.com/auth/userinfo.profile"
 ]
 
-# Correct Hebrew months list (0-based index adjusted)
+# Hebrew Months List
 HEBREW_MONTHS = [
-    "ניסן",    # 0
-    "אייר",    # 1
-    "סיוון",   # 2
-    "תמוז",    # 3
-    "אב",      # 4
-    "אלול",    # 5
-    "תשרי",    # 6
-    "חשוון",   # 7
-    "כסלו",    # 8
-    "טבת",     # 9
-    "שבט",     # 10
-    "אדר א",   # 11
-    "אדר ב"    # 12
+    "ניסן", "אייר", "סיוון", "תמוז", "אב", "אלול", 
+    "תשרי", "חשוון", "כסלו", "טבת", "שבט", "אדר א", "אדר ב"
 ]
 
+# Holiday Definitions
 HOLIDAY_LINKS = {
     "🎭 פורים": [(11, 14), (12, 14)],
     "🇮🇱 יום העצמאות": [(8, 5)],
@@ -58,6 +48,32 @@ HOLIDAY_LINKS = {
     "🐸 פסח": [(1, d) for d in range(15, 22)],
     "🕎 חנוכה": [(8, 25), (8, 26), (8, 27), (8, 28), (8, 29), (8, 30), (9, 1), (9, 2)],
 }
+
+def get_extended_holidays(outside_israel):
+    """
+    Extend holidays for diaspora communities
+    
+    Args:
+        outside_israel (bool): Whether user is outside Israel
+    
+    Returns:
+        dict: Updated holiday dates
+    """
+    holidays = HOLIDAY_LINKS.copy()
+    if outside_israel:
+        for holiday in ["📜 שבועות", "🛖 סוכות", "🐸 פסח"]:
+            dates = holidays.get(holiday, [])
+            if dates:
+                last = dates[-1]
+                try:
+                    g_year = 5784  # Placeholder year
+                    g = hebrew.to_gregorian(g_year, last[0], last[1])
+                    next_day = datetime(*g) + timedelta(days=1)
+                    h_next = hebrew.from_gregorian(next_day.year, next_day.month, next_day.day)
+                    holidays[holiday].append((h_next[1], h_next[2]))
+                except Exception as e:
+                    logger.warning(f"Could not extend holiday {holiday}: {e}")
+    return holidays
 
 def get_all_photos(headers, max_photos=500):
     """
@@ -121,6 +137,37 @@ def get_all_photos(headers, max_photos=500):
     
     return photos
 
+def count_holiday_photos(photos, outside_israel=False):
+    """
+    Count unique photos for each holiday
+    
+    Args:
+        photos (list): List of photos from get_all_photos()
+        outside_israel (bool): Whether to include extended holiday dates for diaspora
+    
+    Returns:
+        list: Formatted holiday photo count strings
+    """
+    # Get extended holidays based on diaspora status
+    holidays = get_extended_holidays(outside_israel)
+    
+    # Prepare holiday photo results
+    holiday_results = []
+    
+    for holiday, dates in holidays.items():
+        # Collect unique photos for this holiday's dates
+        holiday_photos = set()
+        for month, day in dates:
+            holiday_photos.update(
+                photo for photo in photos 
+                if photo['_hebrew_month'] == month and photo['_hebrew_day'] == day
+            )
+        
+        # Format the result line
+        holiday_results.append(f"{holiday} ({len(holiday_photos)} photo(s))")
+    
+    return holiday_results
+
 def create_flow():
     client_secret_content = os.environ.get("GOOGLE_CLIENT_SECRET_JSON")
     if not client_secret_content:
@@ -131,32 +178,6 @@ def create_flow():
         scopes=SCOPES,
         redirect_uri="https://chailights.onrender.com/oauth/callback"
     )
-
-def get_extended_holidays(outside_israel):
-    """
-    Extend holidays for diaspora communities
-    
-    Args:
-        outside_israel (bool): Whether user is outside Israel
-    
-    Returns:
-        dict: Updated holiday dates
-    """
-    holidays = HOLIDAY_LINKS.copy()
-    if outside_israel:
-        for holiday in ["📜 שבועות", "🛖 סוכות", "🐸 פסח"]:
-            dates = holidays.get(holiday, [])
-            if dates:
-                last = dates[-1]
-                try:
-                    g_year = 5784  # Placeholder year
-                    g = hebrew.to_gregorian(g_year, last[0], last[1])
-                    next_day = datetime(*g) + timedelta(days=1)
-                    h_next = hebrew.from_gregorian(next_day.year, next_day.month, next_day.day)
-                    holidays[holiday].append((h_next[1], h_next[2]))
-                except Exception as e:
-                    logger.warning(f"Could not extend holiday {holiday}: {e}")
-    return holidays
 
 def generate_suggested_dates(h_year, h_month, h_day, include_erev, outside_israel):
     """
@@ -261,6 +282,13 @@ def fetch_photos():
 
     # Fetch and match photos
     photos = get_all_photos(headers)
+    
+    # Count holiday photos (optional, you can remove or modify as needed)
+    holiday_counts = count_holiday_photos(photos, outside_israel)
+    print("Holiday Photo Counts:")
+    for count in holiday_counts:
+        print(count)
+
     matches = [
         (photo["baseUrl"] + "=w600-h600", 
          photo['_original_date'], 

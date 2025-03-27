@@ -1,3 +1,4 @@
+# app/main.py
 from flask import Flask, redirect, request, session, url_for
 import os
 import requests
@@ -5,7 +6,7 @@ import json
 from io import StringIO
 from google_auth_oauthlib.flow import Flow
 from convertdate import hebrew
-from datetime import datetime
+from datetime import datetime, timedelta
 from collections import defaultdict
 import logging
 
@@ -39,6 +40,24 @@ HOLIDAY_LINKS = {
     "🐸 Passover": [(0, d) for d in range(15, 22)],
     "🕎 Hanukkah": [(8, 25), (8, 26), (8, 27), (8, 28), (8, 29), (8, 30), (9, 1), (9, 2)],
 }
+
+# Adjust holiday ranges for outside Israel (adds 1 extra day to specific holidays)
+def get_extended_holidays(outside_israel):
+    holidays = HOLIDAY_LINKS.copy()
+    if outside_israel:
+        for holiday in ["📜 Shavuot", "🛖 Sukkot", "🐸 Passover"]:
+            dates = holidays.get(holiday, [])
+            if dates:
+                last = dates[-1]
+                try:
+                    g_year = 5784  # Placeholder year
+                    g = hebrew.to_gregorian(g_year, last[0], last[1])
+                    next_day = datetime(*g) + timedelta(days=1)
+                    h_next = hebrew.from_gregorian(next_day.year, next_day.month, next_day.day)
+                    holidays[holiday].append((h_next[1], h_next[2]))
+                except Exception as e:
+                    logging.warning(f"Could not extend holiday {holiday}: {e}")
+    return holidays
 
 def create_flow():
     client_secret_content = os.environ.get("GOOGLE_CLIENT_SECRET_JSON")
@@ -106,6 +125,18 @@ def refresh_access_token(creds):
     else:
         logging.warning("Failed to refresh token")
 
+def get_matching_hebrew_dates(h_month, h_day, include_erev):
+    dates = [(h_month, h_day)]
+    if include_erev:
+        try:
+            g = hebrew.to_gregorian(5784, h_month, h_day)
+            dt = datetime(*g) - timedelta(days=1)
+            h_prev = hebrew.from_gregorian(dt.year, dt.month, dt.day)
+            dates.append((h_prev[1], h_prev[2]))
+        except Exception as e:
+            logging.warning(f"Could not compute erev date: {e}")
+    return set(dates)
+
 def get_all_photos(headers):
     photos = []
     page_token = None
@@ -126,6 +157,13 @@ def get_all_photos(headers):
     return photos
 
 @app.route("/photos")
+def get_holiday_for_date(h_month, h_day, outside_israel):
+    extended = get_extended_holidays(outside_israel)
+    for label, dates in extended.items():
+        if (h_month, h_day) in dates:
+            return label
+    return None
+
 def fetch_photos():
     if "credentials" not in session:
         return redirect(url_for("index"))
@@ -150,7 +188,15 @@ def fetch_photos():
     if not (0 <= target_month < len(hebrew.MONTHS_HEB)):
         return "<p>Invalid Hebrew month</p>"
 
+    valid_dates = get_matching_hebrew_dates(target_month, target_day, include_erev)
     date_label = f"{target_day} {hebrew.MONTHS_HEB[target_month]}"
+    holiday_announcement = ""
+    if query_day is None:
+        date_label += " (Today)"
+        today_holiday = get_holiday_for_date(target_month, target_day, outside_israel)
+        if today_holiday:
+            holiday_announcement = f"<h3>📅 Today is {today_holiday.split(' ', 1)[-1]}!</h3>"
+    
     if query_day is None:
         date_label += " (Today)"
 
@@ -162,7 +208,7 @@ def fetch_photos():
         try:
             y, m, d = map(int, date.split("-"))
             h_year, h_month, h_day = hebrew.from_gregorian(y, m, d)
-            if h_month == target_month and h_day == target_day:
+            if (h_month, h_day) in valid_dates:
                 matches.append((photo["baseUrl"] + "=w600-h600", date, f"{h_day} {hebrew.MONTHS_HEB[h_month]} {h_year}"))
         except Exception as e:
             logging.warning(f"Error parsing photo date: {e}")
@@ -193,6 +239,7 @@ def fetch_photos():
         img {{ width: 100%; height: auto; }}
         </style></head><body>
         <h2>👋 Welcome, {user_name}!</h2>
+        {holiday_announcement}
         <h3>📅 Hebrew Date: {date_label}</h3>
         {form_html}
         {photo_html}

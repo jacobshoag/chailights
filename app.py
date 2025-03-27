@@ -9,7 +9,9 @@ from datetime import datetime, timedelta
 import logging
 
 app = Flask(__name__)
-app.secret_key = "super-dev-secret-key-for-testing-only"
+
+# Secure secret key (for testing)
+app.secret_key = os.urandom(24)
 os.environ['OAUTHLIB_INSECURE_TRANSPORT'] = '1'
 
 app.config['SESSION_COOKIE_SECURE'] = True
@@ -26,18 +28,35 @@ SCOPES = [
     "https://www.googleapis.com/auth/userinfo.profile"
 ]
 
+# Correct Hebrew months list (0-based index adjusted)
+HEBREW_MONTHS = [
+    "ניסן",    # 0
+    "אייר",    # 1
+    "סיוון",   # 2
+    "תמוז",    # 3
+    "אב",      # 4
+    "אלול",    # 5
+    "תשרי",    # 6
+    "חשוון",   # 7
+    "כסלו",    # 8
+    "טבת",     # 9
+    "שבט",     # 10
+    "אדר א",   # 11
+    "אדר ב"    # 12
+]
+
 HOLIDAY_LINKS = {
-    "🎭 Purim": [(11, 14), (12, 14)],
-    "🇮🇱 Yom Ha'atzmaut": [(1, 5)],
-    "🎖️ Yom HaZikaron": [(1, 4)],
-    "🕍 Yom Yerushalayim": [(2, 28)],
-    "📜 Shavuot": [(2, 6)],
-    "🌳 Tu BiShvat": [(10, 15)],
-    "📯 Rosh Hashanah": [(6, 1), (6, 2)],
-    "🤍 Yom Kippur": [(6, 10)],
-    "🛖 Sukkot": [(6, d) for d in range(15, 22)],
-    "🐸 Passover": [(0, d) for d in range(15, 22)],
-    "🕎 Hanukkah": [(8, 25), (8, 26), (8, 27), (8, 28), (8, 29), (8, 30), (9, 1), (9, 2)],
+    "🎭 פורים": [(11, 14), (12, 14)],
+    "🇮🇱 יום העצמאות": [(8, 5)],
+    "🎖️ יום הזיכרון": [(8, 4)],
+    "🕍 יום ירושלים": [(9, 28)],
+    "📜 שבועות": [(9, 6)],
+    "🌳 ט״ו בשבט": [(10, 15)],
+    "📯 ראש השנה": [(6, 1), (6, 2)],
+    "🤍 יום כיפור": [(6, 10)],
+    "🛖 סוכות": [(6, d) for d in range(15, 22)],
+    "🐸 פסח": [(1, d) for d in range(15, 22)],
+    "🕎 חנוכה": [(8, 25), (8, 26), (8, 27), (8, 28), (8, 29), (8, 30), (9, 1), (9, 2)],
 }
 
 def get_all_photos(headers, max_photos=500):
@@ -70,7 +89,27 @@ def get_all_photos(headers, max_photos=500):
             
             data = r.json()
             items = data.get("mediaItems", [])
-            photos.extend(items)
+            
+            # Pre-filter and annotate items with Hebrew date
+            filtered_items = []
+            for item in items:
+                date = item.get("mediaMetadata", {}).get("creationTime", "")[:10]
+                try:
+                    y, m, d = map(int, date.split("-"))
+                    # Correct Hebrew date conversion
+                    h_year, h_month, h_day = hebrew.from_gregorian(y, m, d)
+                    
+                    # Add Hebrew date information to the item
+                    item['_hebrew_month'] = h_month
+                    item['_hebrew_day'] = h_day
+                    item['_hebrew_year'] = h_year
+                    item['_original_date'] = date
+                    
+                    filtered_items.append(item)
+                except Exception as e:
+                    logger.warning(f"Could not convert date for item: {e}")
+            
+            photos.extend(filtered_items)
             
             page_token = data.get("nextPageToken")
             if not page_token:
@@ -105,7 +144,7 @@ def get_extended_holidays(outside_israel):
     """
     holidays = HOLIDAY_LINKS.copy()
     if outside_israel:
-        for holiday in ["📜 Shavuot", "🛖 Sukkot", "🐸 Passover"]:
+        for holiday in ["📜 שבועות", "🛖 סוכות", "🐸 פסח"]:
             dates = holidays.get(holiday, [])
             if dates:
                 last = dates[-1]
@@ -140,7 +179,7 @@ def generate_suggested_dates(h_year, h_month, h_day, include_erev, outside_israe
         # Previous day could be Erev of a holiday
         erev_day = h_day - 1 if h_day > 1 else 30
         erev_month = h_month if h_day > 1 else (h_month - 1 if h_month > 0 else 12)
-        suggestions.append((erev_month, erev_day, "Erev"))
+        suggestions.append((erev_month, erev_day, "ערב"))
     
     # Holiday extensions for diaspora
     extended_holidays = get_extended_holidays(outside_israel)
@@ -216,100 +255,82 @@ def fetch_photos():
     target_month = query_month if query_month is not None else month_today
 
     # Create date label
-    date_label = f"{target_day} {hebrew.MONTHS_HEB[target_month]}"
+    date_label = f"{target_day} {HEBREW_MONTHS[target_month]}"
     if query_day is None:
-        date_label += " (Today)"
+        date_label += " (היום)"
 
-    # Fetch photos
+    # Fetch and match photos
     photos = get_all_photos(headers)
-    matches = []
-    hebrew_date_to_photos = {}
+    matches = [
+        (photo["baseUrl"] + "=w600-h600", 
+         photo['_original_date'], 
+         f"{photo['_hebrew_day']} {HEBREW_MONTHS[photo['_hebrew_month']]} {photo['_hebrew_year']}")
+        for photo in photos 
+        if photo['_hebrew_month'] == target_month and photo['_hebrew_day'] == target_day
+    ]
 
-    # Process photos
-    for photo in photos:
-        date = photo.get("mediaMetadata", {}).get("creationTime", "")[:10]
-        try:
-            y, m, d = map(int, date.split("-"))
-            h_year, h_month, h_day = hebrew.from_gregorian(y, m, d)
-            
-            # Track photos by Hebrew date
-            key = f"{h_month},{h_day}"
-            if not hebrew_date_to_photos.get(key):
-                hebrew_date_to_photos[key] = []
-            hebrew_date_to_photos[key].append(photo)
-
-            # Check for matching date
-            if h_month == target_month and h_day == target_day:
-                matches.append((photo["baseUrl"] + "=w600-h600", date, f"{h_day} {hebrew.MONTHS_HEB[h_month]} {h_year}"))
-        except:
-            continue
-
-    # Holiday links
+    # Holiday links processing
     holidays = get_extended_holidays(outside_israel)
-    holiday_links_html = "<h4>🕎 Jewish Holidays</h4><ul>"
+    holiday_links_html = "<h4>🕎 חגים יהודיים</h4><ul>"
     holiday_html = ""
 
     # Process holiday links and announcements
     for label, dates in holidays.items():
-        holiday_match = False
         for m, d in dates:
-            holiday_key = f"{m},{d}"
-            if holiday_key == f"{target_month},{target_day}":
-                holiday_match = True
-                holiday_html += f"<h4>🎉 Today is {label}!</h4>"
+            if m == target_month and d == target_day:
+                holiday_html += f"<h4>🎉 היום הוא {label}!</h4>"
             
-            count = len(hebrew_date_to_photos.get(holiday_key, []))
-            holiday_links_html += f"<li><a href='/photos?month={m}&day={d}'>{label}</a> ({count} photo(s))</li>"
+        holiday_links_html += f"<li><a href='/photos?month={m}&day={d}'>{label}</a></li>"
 
     holiday_links_html += "</ul>"
 
-    # Photo display
+    # Photo display logic
     if not matches:
         # Generate suggestions if no photos found
         suggestions = generate_suggested_dates(h_year_today, target_month, target_day, include_erev, outside_israel)
-        suggestion_html = "<h4>🔍 No Photos Found. Try these dates:</h4><ul>"
+        suggestion_html = "<h4>🔍 לא נמצאו תמונות. נסו תאריכים אלה:</h4><ul>"
         for s_month, s_day, s_type in suggestions:
-            suggestion_html += f'<li><a href="/photos?month={s_month}&day={s_day}">{s_type}: {s_day} {hebrew.MONTHS_HEB[s_month]}</a></li>'
+            suggestion_html += f'<li><a href="/photos?month={s_month}&day={s_day}">{s_type}: {s_day} {HEBREW_MONTHS[s_month]}</a></li>'
         suggestion_html += "</ul>"
     else:
         suggestion_html = ""
 
-    photo_html = "<h4>📷 Matching Photos</h4>" if matches else "<p>No matches for that Hebrew date.</p>"
+    photo_html = "<h4>📷 תמונות תואמות</h4>" if matches else "<p>אין תמונות עבור תאריך זה.</p>"
     for url, d, h in matches:
         photo_html += f'<img src="{url}"><br><small>{d} / {h}</small><br><br>'
 
     # Month dropdown
     month_dropdown = ""
-    for i, name in enumerate(hebrew.MONTHS_HEB):
+    for i, name in enumerate(HEBREW_MONTHS):
         selected = "selected" if i == target_month else ""
         month_dropdown += f'<option value="{i}" {selected}>{name}</option>'
 
     # Search form
     form_html = f"""
         <form method="get">
-            Day: <input type="number" name="day" min="1" max="30" value="{target_day}">
-            Month: <select name="month">{month_dropdown}</select><br>
-            <label><input type="checkbox" name="erev" value="1" {'checked' if include_erev else ''}> Include Erev</label><br>
-            <label><input type="checkbox" name="outside" value="1" {'checked' if outside_israel else ''}> Outside of Israel</label><br>
-            <button type="submit">🔍 Search</button>
+            יום: <input type="number" name="day" min="1" max="30" value="{target_day}">
+            חודש: <select name="month">{month_dropdown}</select><br>
+            <label><input type="checkbox" name="erev" value="1" {'checked' if include_erev else ''}> כולל ערב</label><br>
+            <label><input type="checkbox" name="outside" value="1" {'checked' if outside_israel else ''}> מחוץ לישראל</label><br>
+            <button type="submit">🔍 חפש</button>
         </form>
         {holiday_links_html}
     """
 
     return f"""
         <html><head><style>
-        body {{ font-family: sans-serif; max-width: 600px; margin: auto; }}
+        body {{ font-family: sans-serif; max-width: 600px; margin: auto; direction: rtl; }}
         img {{ width: 100%; height: auto; }}
         a {{ color: blue; text-decoration: none; }}
         a:hover {{ text-decoration: underline; }}
         </style></head><body>
-        <h2>👋 Welcome, {user_name}!</h2>
-        <h3>📅 Hebrew Date: {date_label}</h3>
+        <h2>👋 ברוכים הבאים, {user_name}!</h2>
+        <h3>📅 תאריך עברי: {date_label}</h3>
         {form_html}
         {holiday_html}
         {photo_html}
         {suggestion_html}
-        <br><a href='/logout'>🚪 Logout</a>
+        <br><a href='/logout'>🚪 התנתק</a>
         </body></html>
     """
 

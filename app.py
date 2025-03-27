@@ -7,14 +7,17 @@ from google_auth_oauthlib.flow import Flow
 from convertdate import hebrew
 from datetime import datetime
 from collections import defaultdict
+import logging
 
 app = Flask(__name__)
-app.secret_key = "super-dev-secret-key-for-testing-only"
+app.secret_key = os.environ.get("FLASK_SECRET_KEY", "dev-insecure-fallback")
 os.environ['OAUTHLIB_INSECURE_TRANSPORT'] = '1'
 
-app.config['SESSION_COOKIE_SECURE'] = True
+app.config['SESSION_COOKIE_SECURE'] = False  # Should be True in production
 app.config['SESSION_COOKIE_HTTPONLY'] = True
 app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
+
+logging.basicConfig(level=logging.INFO)
 
 SCOPES = [
     "https://www.googleapis.com/auth/photoslibrary.readonly",
@@ -23,10 +26,10 @@ SCOPES = [
     "https://www.googleapis.com/auth/userinfo.profile"
 ]
 
-# Map of holidays to their Hebrew dates (month_index, day)
 HOLIDAY_LINKS = {
     "🎭 Purim": [(11, 14), (12, 14)],
     "🇮🇱 Yom Ha'atzmaut": [(1, 5)],
+    "🎖️ Yom HaZikaron": [(1, 4)],
     "🕍 Yom Yerushalayim": [(2, 28)],
     "📜 Shavuot": [(2, 6)],
     "🌳 Tu BiShvat": [(10, 15)],
@@ -34,8 +37,7 @@ HOLIDAY_LINKS = {
     "🤍 Yom Kippur": [(6, 10)],
     "🛖 Sukkot": [(6, d) for d in range(15, 22)],
     "🐸 Passover": [(0, d) for d in range(15, 22)],
-    "🕎 Hanukkah": [(8, d) for d in range(25, 31)] + [(9, d) for d in range(1, 3)],
-    "🎖️ Yom HaZikaron": [(1, 4)],
+    "🕎 Hanukkah": [(8, 25), (8, 26), (8, 27), (8, 28), (8, 29), (8, 30), (9, 1), (9, 2)],
 }
 
 def create_flow():
@@ -61,12 +63,14 @@ def index():
         state=state
     )
     return f"""
+        <html><head><style>
+        body {{ font-family: sans-serif; margin: 20px; max-width: 600px; }}
+        img {{ max-width: 100%; height: auto; }}
+        </style></head><body>
         <h2>📸 ChaiLights – Hebrew Date Memories</h2>
         <p>See your old Google Photos taken on this Hebrew date.</p>
-        <form action="/photos" method="get">
-            <input type="hidden" name="auto" value="1">
-            <button>🔗 Sign in with Google</button>
-        </form>
+        <a href="{auth_url}"><button>🔗 Sign in with Google</button></a>
+        </body></html>
     """
 
 @app.route("/oauth/callback")
@@ -77,7 +81,6 @@ def oauth_callback():
     flow = create_flow()
     flow.fetch_token(authorization_response=request.url)
     creds = flow.credentials
-
     session["credentials"] = {
         'token': creds.token,
         'refresh_token': creds.refresh_token,
@@ -88,59 +91,87 @@ def oauth_callback():
     }
     return redirect(url_for("fetch_photos"))
 
+def refresh_access_token(creds):
+    data = {
+        'client_id': creds['client_id'],
+        'client_secret': creds['client_secret'],
+        'refresh_token': creds['refresh_token'],
+        'grant_type': 'refresh_token'
+    }
+    response = requests.post(creds['token_uri'], data=data)
+    if response.ok:
+        new_token = response.json()['access_token']
+        creds['token'] = new_token
+        session['credentials'] = creds
+    else:
+        logging.warning("Failed to refresh token")
+
+def get_all_photos(headers):
+    photos = []
+    page_token = None
+    while True:
+        params = {"pageSize": 100}
+        if page_token:
+            params["pageToken"] = page_token
+        r = requests.get("https://photoslibrary.googleapis.com/v1/mediaItems", headers=headers, params=params)
+        if r.status_code != 200:
+            logging.warning("Failed to fetch photos: %s", r.text)
+            break
+        data = r.json()
+        items = data.get("mediaItems", [])
+        photos.extend(items)
+        page_token = data.get("nextPageToken")
+        if not page_token:
+            break
+    return photos
+
 @app.route("/photos")
 def fetch_photos():
     if "credentials" not in session:
         return redirect(url_for("index"))
 
     creds = session["credentials"]
+    refresh_access_token(creds)
     headers = {"Authorization": f"Bearer {creds['token']}"}
     user_info = requests.get("https://www.googleapis.com/oauth2/v3/userinfo", headers=headers).json()
     user_name = user_info.get("name", "User")
 
+    query_day = request.args.get("day", type=int)
+    query_month = request.args.get("month", type=int)
+    include_erev = request.args.get("erev") == "1"
+    outside_israel = request.args.get("outside") == "1"
+
     today = datetime.now()
-    h_year, current_month, current_day = hebrew.from_gregorian(today.year, today.month, today.day)
-    target_month = request.args.get("month", default=current_month, type=int)
-    target_day = request.args.get("day", default=current_day, type=int)
+    h_year_today, month_today, day_today = hebrew.from_gregorian(today.year, today.month, today.day)
 
-    response = requests.get("https://photoslibrary.googleapis.com/v1/mediaItems?pageSize=100", headers=headers)
-    if response.status_code != 200:
-        return "<h2>Error fetching photos</h2><p>Try re-authenticating.</p>"
+    target_day = query_day if query_day is not None else day_today
+    target_month = query_month if query_month is not None else month_today
 
-    photos = response.json().get("mediaItems", [])
-    hebrew_date_to_photos = defaultdict(list)
+    if not (0 <= target_month < len(hebrew.MONTHS_HEB)):
+        return "<p>Invalid Hebrew month</p>"
+
+    date_label = f"{target_day} {hebrew.MONTHS_HEB[target_month]}"
+    if query_day is None:
+        date_label += " (Today)"
+
+    photos = get_all_photos(headers)
+    matches = []
 
     for photo in photos:
         date = photo.get("mediaMetadata", {}).get("creationTime", "")[:10]
-        if not date:
-            continue
         try:
-            year, month, day = map(int, date.split("-"))
-            h_year, h_month, h_day = hebrew.from_gregorian(year, month, day)
-            key = (h_month, h_day)
-            hebrew_date_to_photos[key].append({
-                "url": photo["baseUrl"] + "=w400-h400",
-                "date": date,
-                "hebrew_date": f"{h_day} {hebrew.MONTHS_HEB[h_month]} {h_year}"
-            })
-        except:
+            y, m, d = map(int, date.split("-"))
+            h_year, h_month, h_day = hebrew.from_gregorian(y, m, d)
+            if h_month == target_month and h_day == target_day:
+                matches.append((photo["baseUrl"] + "=w600-h600", date, f"{h_day} {hebrew.MONTHS_HEB[h_month]} {h_year}"))
+        except Exception as e:
+            logging.warning(f"Error parsing photo date: {e}")
             continue
 
-    matching_photos = hebrew_date_to_photos.get((target_month, target_day), [])
+    photo_html = "<h4>📷 Matching Photos</h4>" if matches else "<p>No matches for that Hebrew date.</p>"
+    for url, d, h in matches:
+        photo_html += f'<img src="{url}"><br><small>{d} / {h}</small><br><br>'
 
-    # Suggestions
-    alt_suggestions = ""
-    count = 0
-    for (h_month, h_day), matches in sorted(hebrew_date_to_photos.items(), key=lambda x: -len(x[1])):
-        if (h_month, h_day) == (target_month, target_day):
-            continue
-        alt_suggestions += f"<li><a href='/photos?day={h_day}&month={h_month}'>{h_day} {hebrew.MONTHS_HEB[h_month]}</a> ({len(matches)} photo(s))</li>"
-        count += 1
-        if count >= 5:
-            break
-    alt_html = f"<h4>📅 Other Hebrew Dates with Photos:</h4><ul>{alt_suggestions}</ul>" if alt_suggestions else ""
-
-    # Month dropdown
     month_dropdown = ""
     for i, name in enumerate(hebrew.MONTHS_HEB):
         selected = "selected" if i == target_month else ""
@@ -148,31 +179,25 @@ def fetch_photos():
 
     form_html = f"""
         <form method="get">
-            Day: <input type="number" name="day" min="1" max="30" value="{target_day}" required>
-            Month: <select name="month">{month_dropdown}</select>
+            Day: <input type="number" name="day" min="1" max="30" value="{target_day}">
+            Month: <select name="month">{month_dropdown}</select><br>
+            <label><input type="checkbox" name="erev" value="1" {'checked' if include_erev else ''}> Include Erev</label><br>
+            <label><input type="checkbox" name="outside" value="1" {'checked' if outside_israel else ''}> Outside of Israel</label><br>
             <button type="submit">🔍 Search</button>
         </form>
     """
 
-    photo_html = "<p>No matches for that Hebrew date.</p>" if not matching_photos else         f"<p>Photos taken on that Hebrew date ({len(matching_photos)} total):</p>" +         "".join([f'<img src="{p["url"]}"><br><small>{p["date"]} / {p["hebrew_date"]}</small><br><br>' for p in matching_photos])
-
-    # Holiday links
-    holiday_html = "<h4>🕎 Jewish Holidays</h4><ul>"
-    for label, dates in HOLIDAY_LINKS.items():
-        unique_dates = set(dates)
-        if unique_dates:
-            any_month, any_day = next(iter(unique_dates))
-            holiday_html += f"<li><a href='/photos?day={any_day}&month={any_month}'>{label}</a></li>"
-    holiday_html += "</ul>"
-
     return f"""
+        <html><head><style>
+        body {{ font-family: sans-serif; max-width: 600px; margin: auto; }}
+        img {{ width: 100%; height: auto; }}
+        </style></head><body>
         <h2>👋 Welcome, {user_name}!</h2>
-        <h3>📅 Hebrew Date: {target_day} {hebrew.MONTHS_HEB[target_month]}</h3>
+        <h3>📅 Hebrew Date: {date_label}</h3>
         {form_html}
-        {holiday_html}
         {photo_html}
-        {alt_html}
         <br><a href='/logout'>🚪 Logout</a>
+        </body></html>
     """
 
 @app.route("/logout")

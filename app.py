@@ -10,7 +10,7 @@ from collections import defaultdict
 
 app = Flask(__name__)
 app.secret_key = "super-dev-secret-key-for-testing-only"
-os.environ['OAUTHLIB_INSECURE_TRANSPORT'] = '1'  # For dev use only
+os.environ['OAUTHLIB_INSECURE_TRANSPORT'] = '1'
 
 app.config['SESSION_COOKIE_SECURE'] = True
 app.config['SESSION_COOKIE_HTTPONLY'] = True
@@ -23,11 +23,24 @@ SCOPES = [
     "https://www.googleapis.com/auth/userinfo.profile"
 ]
 
+# Map of holidays to their Hebrew dates (month_index, day)
+HOLIDAY_LINKS = {
+    "🎭 Purim": [(11, 14), (12, 14)],
+    "🇮🇱 Yom Ha'atzmaut": [(1, 5)],
+    "🕍 Yom Yerushalayim": [(2, 28)],
+    "📜 Shavuot": [(2, 6)],
+    "🌳 Tu BiShvat": [(10, 15)],
+    "📯 Rosh Hashanah": [(6, 1), (6, 2)],
+    "🤍 Yom Kippur": [(6, 10)],
+    "🛖 Sukkot": [(6, 15), (6, 16), (6, 17), (6, 18), (6, 19), (6, 20), (6, 21)],
+    "🐸 Passover": [(0, 15), (0, 16), (0, 17), (0, 18), (0, 19), (0, 20), (0, 21)],
+    "🎖️ Yom HaZikaron": [(1, 4)],
+}
+
 def create_flow():
     client_secret_content = os.environ.get("GOOGLE_CLIENT_SECRET_JSON")
     if not client_secret_content:
         raise Exception("Missing GOOGLE_CLIENT_SECRET_JSON in environment")
-
     client_config = json.load(StringIO(client_secret_content))
     return Flow.from_client_config(
         client_config,
@@ -78,14 +91,13 @@ def fetch_photos():
 
     creds = session["credentials"]
     headers = {"Authorization": f"Bearer {creds['token']}"}
-
     user_info = requests.get("https://www.googleapis.com/oauth2/v3/userinfo", headers=headers).json()
     user_name = user_info.get("name", "User")
 
     query_day = request.args.get("day", type=int)
     query_month = request.args.get("month", type=int)
 
-    if query_day and query_month:
+    if query_day is not None and query_month is not None:
         target_day = query_day
         target_month = query_month
         date_label = f"{target_day} {hebrew.MONTHS_HEB[target_month]}"
@@ -107,8 +119,7 @@ def fetch_photos():
             continue
         try:
             year, month, day = map(int, date.split("-"))
-            photo_hebrew = hebrew.from_gregorian(year, month, day)
-            h_year, h_month, h_day = photo_hebrew
+            h_year, h_month, h_day = hebrew.from_gregorian(year, month, day)
             key = (h_month, h_day)
             hebrew_date_to_photos[key].append({
                 "url": photo["baseUrl"] + "=w400-h400",
@@ -120,6 +131,7 @@ def fetch_photos():
 
     matching_photos = hebrew_date_to_photos.get((target_month, target_day), [])
 
+    # Alternate suggestions
     alt_suggestions = ""
     count = 0
     for (h_month, h_day), matches in sorted(hebrew_date_to_photos.items(), key=lambda x: -len(x[1])):
@@ -131,28 +143,9 @@ def fetch_photos():
             break
     alt_html = f"<h4>📅 Other Hebrew Dates with Photos:</h4><ul>{alt_suggestions}</ul>" if alt_suggestions else ""
 
-    HOLIDAY_LINKS = [
-        {"label": "🎭 Purim", "day": 14, "month": 12},
-        {"label": "🇮🇱 Yom Ha'atzmaut", "day": 5, "month": 2},
-        {"label": "🕍 Yom Yerushalayim", "day": 28, "month": 3},
-        {"label": "📜 Shavuot", "day": 6, "month": 3},
-        {"label": "🌳 Tu BiShvat", "day": 15, "month": 11},
-        {"label": "🍎 Rosh Hashanah", "day": 1, "month": 6},
-        {"label": "🤍 Yom Kippur", "day": 10, "month": 6},
-        {"label": "🛖 Sukkot", "day": 15, "month": 6},
-        {"label": "🐸 Passover", "day": 15, "month": 1},
-        {"label": "🎖️ Yom Hazikaron", "day": 4, "month": 2},
-    ]
-
-    holiday_html = "<h4>📆 Jewish Holidays:</h4><ul>"
-    for h in HOLIDAY_LINKS:
-        holiday_html += f"<li><a href='/photos?day={h['day']}&month={h['month']}'>{h['label']}</a></li>"
-    holiday_html += "</ul>"
-
+    # Month dropdown
     month_dropdown = ""
     for i, name in enumerate(hebrew.MONTHS_HEB):
-        if i == 0:
-            continue
         selected = "selected" if i == target_month else ""
         month_dropdown += f'<option value="{i}" {selected}>{name}</option>'
 
@@ -167,17 +160,24 @@ def fetch_photos():
     if not matching_photos:
         photo_html = "<p>No matches for that Hebrew date.</p>"
     else:
-        photo_html = f"<p>{len(matching_photos)} photo(s) taken on that Hebrew date:</p>"
+        photo_html = f"<p>Photos taken on that Hebrew date ({len(matching_photos)} total):</p>"
         for p in matching_photos:
             photo_html += f'<img src="{p["url"]}"><br><small>{p["date"]} / {p["hebrew_date"]}</small><br><br>'
+
+    # Holiday links
+    holiday_html = "<h4>🕎 Jewish Holidays</h4><ul>"
+    for label, dates in HOLIDAY_LINKS.items():
+        for m, d in dates:
+            holiday_html += f"<li>{label}: <a href='/photos?day={d}&month={m}'>{d} {hebrew.MONTHS_HEB[m]}</a></li>"
+    holiday_html += "</ul>"
 
     return f"""
         <h2>👋 Welcome, {user_name}!</h2>
         <h3>📅 Hebrew Date: {date_label}</h3>
         {form_html}
+        {holiday_html}
         {photo_html}
         {alt_html}
-        {holiday_html}
         <br><a href='/logout'>🚪 Logout</a>
     """
 

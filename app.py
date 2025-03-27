@@ -23,19 +23,40 @@ SCOPES = [
     "https://www.googleapis.com/auth/userinfo.profile"
 ]
 
-# Map of holidays to their Hebrew dates (month_index, day)
-HOLIDAY_LINKS = {
+# Base holiday definitions
+HOLIDAY_BASE = {
     "🎭 Purim": [(11, 14), (12, 14)],
     "🇮🇱 Yom Ha'atzmaut": [(1, 5)],
+    "🎖️ Yom HaZikaron": [(1, 4)],
     "🕍 Yom Yerushalayim": [(2, 28)],
     "📜 Shavuot": [(2, 6)],
     "🌳 Tu BiShvat": [(10, 15)],
     "📯 Rosh Hashanah": [(6, 1), (6, 2)],
     "🤍 Yom Kippur": [(6, 10)],
-    "🛖 Sukkot": [(6, 15), (6, 16), (6, 17), (6, 18), (6, 19), (6, 20), (6, 21)],
-    "🐸 Passover": [(0, 15), (0, 16), (0, 17), (0, 18), (0, 19), (0, 20), (0, 21)],
-    "🎖️ Yom HaZikaron": [(1, 4)],
+    "🛖 Sukkot": [(6, d) for d in range(15, 22)],
+    "🐸 Passover": [(0, d) for d in range(15, 22)],
 }
+
+# Compute extended holiday dates with optional erev and outside-Israel
+def compute_holiday_dates(include_erev=False, include_extra=False):
+    holiday_map = {}
+    for label, base_dates in HOLIDAY_BASE.items():
+        dates = base_dates.copy()
+        if include_extra and label in ["📜 Shavuot", "🛖 Sukkot", "🐸 Passover"]:
+            last = base_dates[-1]
+            dates.append((last[0], last[1] + 1))  # Add 8th day
+        if include_erev:
+            erev_dates = []
+            for month, day in base_dates:
+                if day > 1:
+                    erev_dates.append((month, day - 1))
+                else:
+                    if month > 0:
+                        erev_dates.append((month - 1, 30))
+            dates += erev_dates
+        unique_dates = list(set(dates))
+        holiday_map[label] = unique_dates
+    return holiday_map
 
 def create_flow():
     client_secret_content = os.environ.get("GOOGLE_CLIENT_SECRET_JSON")
@@ -101,10 +122,15 @@ def fetch_photos():
         target_day = query_day
         target_month = query_month
         date_label = f"{target_day} {hebrew.MONTHS_HEB[target_month]}"
+        active_targets = [(target_month, target_day)]
+    elif "holiday_dates" in session:
+        active_targets = session.pop("holiday_dates")
+        date_label = "Selected Holiday"
     else:
         today = datetime.now()
         h_year, target_month, target_day = hebrew.from_gregorian(today.year, today.month, today.day)
         date_label = f"{target_day} {hebrew.MONTHS_HEB[target_month]} (Today)"
+        active_targets = [(target_month, target_day)]
 
     response = requests.get("https://photoslibrary.googleapis.com/v1/mediaItems?pageSize=100", headers=headers)
     if response.status_code != 200:
@@ -129,13 +155,15 @@ def fetch_photos():
         except:
             continue
 
-    matching_photos = hebrew_date_to_photos.get((target_month, target_day), [])
+    matching_photos = []
+    for key in active_targets:
+        matching_photos.extend(hebrew_date_to_photos.get(key, []))
 
-    # Alternate suggestions
+    # Alt suggestions
     alt_suggestions = ""
     count = 0
     for (h_month, h_day), matches in sorted(hebrew_date_to_photos.items(), key=lambda x: -len(x[1])):
-        if (h_month, h_day) == (target_month, target_day):
+        if (h_month, h_day) in active_targets:
             continue
         alt_suggestions += f"<li><a href='/photos?day={h_day}&month={h_month}'>{h_day} {hebrew.MONTHS_HEB[h_month]}</a> ({len(matches)} photo(s))</li>"
         count += 1
@@ -144,15 +172,15 @@ def fetch_photos():
     alt_html = f"<h4>📅 Other Hebrew Dates with Photos:</h4><ul>{alt_suggestions}</ul>" if alt_suggestions else ""
 
     # Month dropdown
-    month_dropdown = ""
+    dropdown = ""
     for i, name in enumerate(hebrew.MONTHS_HEB):
         selected = "selected" if i == target_month else ""
-        month_dropdown += f'<option value="{i}" {selected}>{name}</option>'
+        dropdown += f'<option value="{i}" {selected}>{name}</option>'
 
     form_html = f"""
         <form method="get">
-            Day: <input type="number" name="day" min="1" max="30" value="{target_day}" required>
-            Month: <select name="month">{month_dropdown}</select>
+            Day: <input type="number" name="day" min="1" max="30" value="{target_day if query_day else ''}" required>
+            Month: <select name="month">{dropdown}</select>
             <button type="submit">🔍 Search</button>
         </form>
     """
@@ -160,16 +188,21 @@ def fetch_photos():
     if not matching_photos:
         photo_html = "<p>No matches for that Hebrew date.</p>"
     else:
-        photo_html = f"<p>Photos taken on that Hebrew date ({len(matching_photos)} total):</p>"
+        photo_html = f"<p>Photos matching selected date(s) ({len(matching_photos)} total):</p>"
         for p in matching_photos:
             photo_html += f'<img src="{p["url"]}"><br><small>{p["date"]} / {p["hebrew_date"]}</small><br><br>'
 
     # Holiday links
-    holiday_html = "<h4>🕎 Jewish Holidays</h4><ul>"
-    for label, dates in HOLIDAY_LINKS.items():
-        for m, d in dates:
-            holiday_html += f"<li>{label}: <a href='/photos?day={d}&month={m}'>{d} {hebrew.MONTHS_HEB[m]}</a></li>"
-    holiday_html += "</ul>"
+    holiday_html = """
+        <h4>🕎 Jewish Holidays</h4>
+        <form id="holidayForm" method="post" action="/holiday">
+        <input type="checkbox" name="erev" id="erev"> <label for="erev">Include Erev Chag</label><br>
+        <input type="checkbox" name="outside" id="outside"> <label for="outside">Outside of Israel</label><br><br>
+        <ul>
+    """
+    for label in HOLIDAY_BASE.keys():
+        holiday_html += f"<li><button type='submit' name='holiday' value='{label}'>{label}</button></li>"
+    holiday_html += "</ul></form>"
 
     return f"""
         <h2>👋 Welcome, {user_name}!</h2>
@@ -180,6 +213,15 @@ def fetch_photos():
         {alt_html}
         <br><a href='/logout'>🚪 Logout</a>
     """
+
+@app.route("/holiday", methods=["POST"])
+def holiday_redirect():
+    label = request.form.get("holiday")
+    include_erev = bool(request.form.get("erev"))
+    include_extra = bool(request.form.get("outside"))
+    computed = compute_holiday_dates(include_erev, include_extra)
+    session["holiday_dates"] = computed.get(label, [])
+    return redirect(url_for("fetch_photos"))
 
 @app.route("/logout")
 def logout():

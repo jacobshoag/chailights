@@ -4,19 +4,23 @@ import requests
 import json
 from io import StringIO
 from google_auth_oauthlib.flow import Flow
+from google.oauth2.credentials import Credentials
+from google.auth.transport.requests import Request as GoogleRequest
 from convertdate import hebrew
 from datetime import datetime, timedelta
 import logging
 
-# Application Configuration
+# Flask setup
 app = Flask(__name__)
-app.secret_key = os.urandom(24)
+app.secret_key = os.environ.get("FLASK_SECRET_KEY", os.urandom(24))
 os.environ['OAUTHLIB_INSECURE_TRANSPORT'] = '1'
 
+# Secure session settings
 app.config['SESSION_COOKIE_SECURE'] = True
 app.config['SESSION_COOKIE_HTTPONLY'] = True
 app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
 
+# Logging setup
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -182,8 +186,24 @@ def oauth_callback():
 def fetch_photos():
     if "credentials" not in session:
         return redirect(url_for("index"))
-    creds = session["credentials"]
-    headers = {"Authorization": f"Bearer {creds['token']}"}
+
+    creds = Credentials(**session["credentials"])
+    if creds.expired and creds.refresh_token:
+        try:
+            creds.refresh(GoogleRequest())
+            session["credentials"] = {
+                'token': creds.token,
+                'refresh_token': creds.refresh_token,
+                'token_uri': creds.token_uri,
+                'client_id': creds.client_id,
+                'client_secret': creds.client_secret,
+                'scopes': creds.scopes
+            }
+        except Exception as e:
+            logger.error(f"Token refresh failed: {e}")
+            return "<h3>Session expired or token refresh failed. Please <a href='/'>log in again</a>.</h3>"
+
+    headers = {"Authorization": f"Bearer {creds.token}"}
     user_info = requests.get("https://www.googleapis.com/oauth2/v3/userinfo", headers=headers).json()
     user_name = user_info.get("name", "User")
 

@@ -2,6 +2,7 @@ from flask import Flask, redirect, request, session, url_for
 import os
 import requests
 import json
+import urllib.parse
 from io import StringIO
 from google_auth_oauthlib.flow import Flow
 from google.oauth2.credentials import Credentials
@@ -54,7 +55,11 @@ TRANSLATIONS = {
         "logout": "🚪 התנתק",
         "language": "שפה:",
         "switch_to_english": "🇺🇸 Switch to English",
-        "switch_to_hebrew": "🇮🇱 עבור לעברית"
+        "switch_to_hebrew": "🇮🇱 עבור לעברית",
+        "eve": "ערב",
+        "login_again": "אנא התחבר מחדש",
+        "invalid_state": "מצב לא חוקי",
+        "try_again": "אנא נסה שוב"
     },
     "en": {
         "app_name": "📸 ChaiLights – Hebrew Date Memories",
@@ -76,7 +81,11 @@ TRANSLATIONS = {
         "logout": "🚪 Logout",
         "language": "Language:",
         "switch_to_english": "🇺🇸 Switch to English",
-        "switch_to_hebrew": "🇮🇱 עבור לעברית"
+        "switch_to_hebrew": "🇮🇱 עבור לעברית",
+        "eve": "Eve",
+        "login_again": "Please log in again",
+        "invalid_state": "Invalid state",
+        "try_again": "Please try again"
     }
 }
 
@@ -92,7 +101,7 @@ HEBREW_MONTHS = {
     ]
 }
 
-# Holiday Definitions with bilingual names
+# Holiday Definitions with bilingual names and mapping
 HOLIDAY_LINKS = {
     "he": {
         "🎭 פורים": [(11, 14), (12, 14)],
@@ -121,6 +130,30 @@ HOLIDAY_LINKS = {
         "🕎 Chanukah": [(8, 25), (8, 26), (8, 27), (8, 28), (8, 29), (8, 30), (9, 1), (9, 2)]
     }
 }
+
+# Translation mapping between languages for holidays
+HOLIDAY_MAPPING = {
+    "🎭 פורים": "🎭 Purim",
+    "🇮🇱 יום העצמאות": "🇮🇱 Independence Day",
+    "🎖️ יום הזיכרון": "🎖️ Memorial Day",
+    "🕍 יום ירושלים": "🕍 Jerusalem Day",
+    "📜 שבועות": "📜 Shavuot",
+    "🌳 ט״ו בשבט": "🌳 Tu B'Shvat",
+    "📯 ראש השנה": "📯 Rosh Hashanah",
+    "🤍 יום כיפור": "🤍 Yom Kippur",
+    "🛖 סוכות": "🛖 Sukkot",
+    "🐸 פסח": "🐸 Pesach",
+    "🕎 חנוכה": "🕎 Chanukah"
+}
+# Reverse mapping for English to Hebrew
+HOLIDAY_MAPPING_REVERSE = {v: k for k, v in HOLIDAY_MAPPING.items()}
+
+def get_lang():
+    """Consistently get language preference with validation"""
+    lang = request.args.get("lang", session.get("lang", "he"))
+    if lang not in ["he", "en"]:
+        lang = "he"
+    return lang
 
 def get_all_photos(headers, max_photos=2500):
     photos = []
@@ -164,8 +197,15 @@ def get_extended_holidays(outside_israel, h_year=None, lang="he"):
     if not h_year:
         today = datetime.now()
         h_year, _, _ = hebrew.from_gregorian(today.year, today.month, today.day)
+    
+    # Get the multilingual holiday identifiers based on language
+    if lang == "he":
+        extension_keys = ["📜 שבועות", "🛖 סוכות", "🐸 פסח"]
+    else:
+        extension_keys = ["📜 Shavuot", "🛖 Sukkot", "🐸 Pesach"]
+    
     if outside_israel:
-        for holiday_key in ["📜 שבועות", "🛖 סוכות", "🐸 פסח"] if lang == "he" else ["📜 Shavuot", "🛖 Sukkot", "🐸 Pesach"]:
+        for holiday_key in extension_keys:
             dates = holidays.get(holiday_key, [])
             if dates:
                 last = dates[-1]
@@ -207,7 +247,7 @@ def generate_suggested_dates(h_year, h_month, h_day, include_erev, outside_israe
     if include_erev:
         prev_day = h_day - 1 if h_day > 1 else 30
         prev_month = h_month if h_day > 1 else (h_month - 1 if h_month > 0 else 12)
-        suggestions.append((prev_month, prev_day, "ערב" if lang == "he" else "Eve"))
+        suggestions.append((prev_month, prev_day, TRANSLATIONS[lang]["eve"]))
     holidays = get_extended_holidays(outside_israel, h_year=h_year, lang=lang)
     for label, dates in holidays.items():
         for m, d in dates:
@@ -217,9 +257,7 @@ def generate_suggested_dates(h_year, h_month, h_day, include_erev, outside_israe
 
 @app.route("/")
 def index():
-    lang = request.args.get("lang", "he")
-    if lang not in ["he", "en"]:
-        lang = "he"
+    lang = get_lang()
     session["lang"] = lang
     
     flow = create_flow()
@@ -236,18 +274,41 @@ def index():
     lang_switch = f"<a href='/?lang={'en' if lang == 'he' else 'he'}'>{TRANSLATIONS[lang]['switch_to_english'] if lang == 'he' else TRANSLATIONS[lang]['switch_to_hebrew']}</a>"
     
     return f"""
-        <html><body style='font-family:sans-serif; direction:{direction};'>
+        <html>
+        <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>{TRANSLATIONS[lang]["app_name"]}</title>
+        </head>
+        <body style='font-family:sans-serif; direction:{direction};'>
+        <div style='text-align: {'right' if lang == 'he' else 'left'};'>
+            {lang_switch}
+        </div>
         <h2>{TRANSLATIONS[lang]["app_name"]}</h2>
         <p>{TRANSLATIONS[lang]["app_description"]}</p>
         <a href='{auth_url}'><button>{TRANSLATIONS[lang]["sign_in"]}</button></a>
-        <p>{lang_switch}</p>
         </body></html>
     """
 
 @app.route("/oauth/callback")
 def oauth_callback():
+    lang = get_lang()
+    
     if session.get("oauth_state") != request.args.get("state"):
-        return "<h2>Invalid state</h2><p>Please try again.</p>"
+        return f"""
+            <html>
+            <head>
+                <meta charset="UTF-8">
+                <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                <title>{TRANSLATIONS[lang]["invalid_state"]}</title>
+            </head>
+            <body>
+                <h2>{TRANSLATIONS[lang]["invalid_state"]}</h2>
+                <p>{TRANSLATIONS[lang]["try_again"]}</p>
+            </body>
+            </html>
+        """
+    
     flow = create_flow()
     flow.fetch_token(authorization_response=request.url)
     creds = flow.credentials
@@ -259,21 +320,27 @@ def oauth_callback():
         'client_secret': creds.client_secret,
         'scopes': creds.scopes
     }
-    return redirect(url_for("fetch_photos"))
+    
+    # Preserve language when redirecting
+    return redirect(url_for("fetch_photos", lang=lang))
 
 @app.route("/photos")
 def fetch_photos():
     if "credentials" not in session:
         return redirect(url_for("index"))
         
-    # Get language preference from query parameter or session, defaulting to Hebrew
-    lang = request.args.get("lang", session.get("lang", "he"))
-    if lang not in ["he", "en"]:
-        lang = "he"
+    # Get language preference with validation
+    lang = get_lang()
     session["lang"] = lang
     
     direction = "rtl" if lang == "he" else "ltr"
-    lang_switch = f"<a href='{request.path}?{get_query_string_with_lang('en' if lang == 'he' else 'he')}'>{TRANSLATIONS[lang]['switch_to_english'] if lang == 'he' else TRANSLATIONS[lang]['switch_to_hebrew']}</a>"
+    text_align = "right" if lang == "he" else "left"
+    
+    # Create a language toggle link that maintains all other query parameters
+    query_params = request.args.copy()
+    query_params["lang"] = "en" if lang == "he" else "he"
+    other_lang_url = f"{request.path}?{urllib.parse.urlencode(query_params)}"
+    lang_switch = f"<a href='{other_lang_url}'>{TRANSLATIONS[lang]['switch_to_english'] if lang == 'he' else TRANSLATIONS[lang]['switch_to_hebrew']}</a>"
 
     creds = Credentials(**session["credentials"])
     if creds.expired and creds.refresh_token:
@@ -289,7 +356,19 @@ def fetch_photos():
             }
         except Exception as e:
             logger.error(f"Token refresh failed: {e}")
-            return "<h3>Session expired or token refresh failed. Please <a href='/'>log in again</a>.</h3>"
+            return f"""
+                <html>
+                <head>
+                    <meta charset="UTF-8">
+                    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                    <title>Session Expired</title>
+                </head>
+                <body style='direction:{direction}; text-align:{text_align};'>
+                    <h3>{TRANSLATIONS[lang]['login_again']}</h3>
+                    <a href='/'>{TRANSLATIONS[lang]['sign_in']}</a>
+                </body>
+                </html>
+            """
 
     headers = {"Authorization": f"Bearer {creds.token}"}
     user_info = requests.get("https://www.googleapis.com/oauth2/v3/userinfo", headers=headers).json()
@@ -323,6 +402,7 @@ def fetch_photos():
         for m, d in dates:
             if m == target_month and d == target_day:
                 holiday_html += f"<h4>{TRANSLATIONS[lang]['today_is']} {label}!</h4>"
+            # Make sure to include language when creating links
             holiday_links_html += f"<li><a href='/photos?month={m}&day={d}&lang={lang}'>{label} – {d} {HEBREW_MONTHS[lang][m]}</a></li>"
     holiday_links_html += "</ul>"
 
@@ -331,6 +411,7 @@ def fetch_photos():
         suggestions = generate_suggested_dates(h_year, target_month, target_day, include_erev, outside_israel, lang)
         suggestion_html += f"<h4>{TRANSLATIONS[lang]['no_photos_suggestions']}</h4><ul>"
         for sm, sd, label in suggestions:
+            # Make sure to include language when creating links
             suggestion_html += f"<li><a href='/photos?month={sm}&day={sd}&lang={lang}'>{label}: {sd} {HEBREW_MONTHS[lang][sm]}</a></li>"
         suggestion_html += "</ul>"
 
@@ -343,11 +424,13 @@ def fetch_photos():
         for i, name in enumerate(HEBREW_MONTHS[lang])
     )
 
+    # Form with input direction based on language
+    input_dir = "rtl" if lang == "he" else "ltr"
     form_html = f"""
         <form method='get'>
             <input type='hidden' name='lang' value='{lang}'>
-            {TRANSLATIONS[lang]['day']} <input type='number' name='day' min='1' max='30' value='{target_day}'>
-            {TRANSLATIONS[lang]['month']} <select name='month'>{month_dropdown}</select><br>
+            <label>{TRANSLATIONS[lang]['day']} <input type='number' name='day' min='1' max='30' value='{target_day}' style='direction:{input_dir};'></label>
+            <label>{TRANSLATIONS[lang]['month']} <select name='month' style='direction:{input_dir};'>{month_dropdown}</select></label><br>
             <label><input type='checkbox' name='erev' value='1' {'checked' if include_erev else ''}> {TRANSLATIONS[lang]['include_eve']}</label><br>
             <label><input type='checkbox' name='outside' value='1' {'checked' if outside_israel else ''}> {TRANSLATIONS[lang]['outside_israel']}</label><br>
             <button type='submit'>{TRANSLATIONS[lang]['search']}</button>
@@ -356,8 +439,14 @@ def fetch_photos():
     """
 
     return f"""
-        <html><body style='font-family:sans-serif; max-width:600px; margin:auto; direction:{direction};'>
-        <div style='text-align: {'right' if lang == 'he' else 'left'};'>
+        <html>
+        <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>{TRANSLATIONS[lang]["app_name"]}</title>
+        </head>
+        <body style='font-family:sans-serif; max-width:600px; margin:auto; direction:{direction};'>
+        <div style='text-align: {text_align};'>
             {lang_switch}
         </div>
         <h2>{TRANSLATIONS[lang]['welcome']} {user_name}!</h2>
@@ -374,12 +463,15 @@ def get_query_string_with_lang(new_lang):
     """Helper function to maintain all query parameters but change the language"""
     params = request.args.copy()
     params["lang"] = new_lang
-    return "&".join(f"{k}={v}" for k, v in params.items())
+    return urllib.parse.urlencode(params)
 
 @app.route("/logout")
 def logout():
+    # Get current language before clearing session
+    lang = get_lang()
     session.clear()
-    return redirect(url_for("index"))
+    # Redirect to index with current language
+    return redirect(url_for("index", lang=lang))
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=True)

@@ -2,3 +2,4 @@ flask
 google-auth-oauthlib
 requests
 convertdate
+Flask-Babel

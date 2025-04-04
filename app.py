@@ -33,7 +33,7 @@ SCOPES = [
     "https://www.googleapis.com/auth/userinfo.profile"
 ]
 
-# Translations dictionary
+# Translations dictionary (updated with "back" entry)
 TRANSLATIONS = {
     "he": {
         "app_name": "📸 ChaiLights – זכרונות תאריך עברי",
@@ -59,7 +59,8 @@ TRANSLATIONS = {
         "eve": "ערב",
         "login_again": "אנא התחבר מחדש",
         "invalid_state": "מצב לא חוקי",
-        "try_again": "אנא נסה שוב"
+        "try_again": "אנא נסה שוב",
+        "back": "🔙 חזרה"  # New entry
     },
     "en": {
         "app_name": "📸 ChaiLights – Hebrew Date Memories",
@@ -85,7 +86,8 @@ TRANSLATIONS = {
         "eve": "Eve",
         "login_again": "Please log in again",
         "invalid_state": "Invalid state",
-        "try_again": "Please try again"
+        "try_again": "Please try again",
+        "back": "🔙 Back"  # New entry
     }
 }
 
@@ -154,6 +156,17 @@ def get_lang():
     if lang not in ["he", "en"]:
         lang = "he"
     return lang
+
+def create_flow():
+    secret = os.environ.get("GOOGLE_CLIENT_SECRET_JSON")
+    if not secret:
+        raise Exception("Missing GOOGLE_CLIENT_SECRET_JSON")
+    config = json.load(StringIO(secret))
+    return Flow.from_client_config(
+        config,
+        scopes=SCOPES,
+        redirect_uri="https://chailights.onrender.com/oauth/callback"
+    )
 
 def get_all_photos(headers, max_photos=2500):
     photos = []
@@ -231,17 +244,6 @@ def count_holiday_photos(photos, outside_israel=False, lang="he"):
         results.append(f"{holiday} ({len(matches)} photo(s))")
     return results
 
-def create_flow():
-    secret = os.environ.get("GOOGLE_CLIENT_SECRET_JSON")
-    if not secret:
-        raise Exception("Missing GOOGLE_CLIENT_SECRET_JSON")
-    config = json.load(StringIO(secret))
-    return Flow.from_client_config(
-        config,
-        scopes=SCOPES,
-        redirect_uri="https://chailights.onrender.com/oauth/callback"
-    )
-
 def generate_suggested_dates(h_year, h_month, h_day, include_erev, outside_israel, lang="he"):
     suggestions = []
     if include_erev:
@@ -254,6 +256,12 @@ def generate_suggested_dates(h_year, h_month, h_day, include_erev, outside_israe
             if m == h_month and abs(d - h_day) <= 1:
                 suggestions.append((m, d, label))
     return suggestions
+
+def get_query_string_with_lang(new_lang):
+    """Helper function to maintain all query parameters but change the language"""
+    params = request.args.copy()
+    params["lang"] = new_lang
+    return urllib.parse.urlencode(params)
 
 @app.route("/")
 def index():
@@ -324,6 +332,27 @@ def oauth_callback():
     # Preserve language when redirecting
     return redirect(url_for("fetch_photos", lang=lang))
 
+# New function to get photos matching specific holiday dates
+def get_photos_by_holiday(photos, holiday_dates):
+    """
+    Find photos matching specified holiday dates across all years.
+    
+    Args:
+        photos: List of photo objects with Hebrew date metadata
+        holiday_dates: List of (month, day) tuples defining the holiday
+        
+    Returns:
+        List of matching photos
+    """
+    matches = []
+    for photo in photos:
+        for month, day in holiday_dates:
+            if photo['_hebrew_month'] == month and photo['_hebrew_day'] == day:
+                matches.append(photo)
+                break  # No need to check other dates for this photo
+    return matches
+
+# Updated route that handles holiday-based photo fetching
 @app.route("/photos")
 def fetch_photos():
     if "credentials" not in session:
@@ -374,6 +403,12 @@ def fetch_photos():
     user_info = requests.get("https://www.googleapis.com/oauth2/v3/userinfo", headers=headers).json()
     user_name = user_info.get("name", "User")
 
+    # Get all photos
+    photos = get_all_photos(headers)
+    
+    # Check if we're requesting a specific holiday
+    holiday_param = request.args.get("holiday")
+    
     query_day = request.args.get("day", type=int)
     query_month = request.args.get("month", type=int)
     include_erev = request.args.get("erev") == "1"
@@ -382,28 +417,94 @@ def fetch_photos():
     today = datetime.now()
     h_year, h_month, h_day = hebrew.from_gregorian(today.year, today.month, today.day)
 
+    # Get extended holidays based on settings
+    holidays = get_extended_holidays(outside_israel, h_year, lang)
+    
+    # If a holiday is specified, show photos from that holiday across all years
+    if holiday_param:
+        # Find the holiday dates for the requested holiday
+        holiday_dates = []
+        holiday_name = ""
+        
+        # Handle both languages for holiday lookup
+        for name, dates in holidays.items():
+            if name == holiday_param:
+                holiday_dates = dates
+                holiday_name = name
+                break
+        
+        if holiday_dates:
+            # Get all photos matching the holiday dates (from any year)
+            matches = []
+            for photo in photos:
+                for m, d in holiday_dates:
+                    if photo['_hebrew_month'] == m and photo['_hebrew_day'] == d:
+                        matches.append((
+                            photo["baseUrl"] + "=w600-h600", 
+                            photo['_original_date'], 
+                            f"{photo['_hebrew_day']} {HEBREW_MONTHS[lang][photo['_hebrew_month']]} {photo['_hebrew_year']}"
+                        ))
+                        break  # Found a match, no need to check other dates
+            
+            holiday_html = f"<h3>{holiday_name}</h3>"
+            photo_html = ""
+            
+            if matches:
+                photo_html = f"<h4>{TRANSLATIONS[lang]['matching_photos']} ({len(matches)})</h4>"
+                matches.sort(key=lambda x: x[1], reverse=True)  # Sort by date, newest first
+                for url, date, heb_date in matches:
+                    photo_html += f'<img src="{url}"><br><small>{date} / {heb_date}</small><br><br>'
+            else:
+                photo_html = f"<p>{TRANSLATIONS[lang]['no_photos']}</p>"
+            
+            # Generate HTML for viewing individual date
+            return f"""
+                <html>
+                <head>
+                    <meta charset="UTF-8">
+                    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                    <title>{TRANSLATIONS[lang]["app_name"]} - {holiday_name}</title>
+                </head>
+                <body style='font-family:sans-serif; max-width:600px; margin:auto; direction:{direction};'>
+                <div style='text-align: {text_align};'>
+                    {lang_switch}
+                </div>
+                <h2>{TRANSLATIONS[lang]['welcome']} {user_name}!</h2>
+                {holiday_html}
+                {photo_html}
+                <br><a href='/photos?lang={lang}'>{TRANSLATIONS[lang]['back']}</a>
+                <br><a href='/logout'>{TRANSLATIONS[lang]['logout']}</a>
+                </body></html>
+            """
+    
+    # Regular date-based view (existing functionality)
     target_day = query_day if query_day is not None else h_day
     target_month = query_month if query_month is not None else h_month - 1
     date_label = f"{target_day} {HEBREW_MONTHS[lang][target_month]}"
     if query_day is None:
         date_label += f" {TRANSLATIONS[lang]['today']}"
 
-    photos = get_all_photos(headers)
     matches = [
-        (p["baseUrl"] + "=w600-h600", p['_original_date'], 
+        (p["baseUrl"] + "=w600-h600", p['_original_date'],
          f"{p['_hebrew_day']} {HEBREW_MONTHS[lang][p['_hebrew_month']]} {p['_hebrew_year']}")
         for p in photos if p['_hebrew_month'] == target_month and p['_hebrew_day'] == target_day
     ]
 
-    holidays = get_extended_holidays(outside_israel, h_year, lang)
     holiday_html = ""
+    # Create pooled holiday links
     holiday_links_html = "<ul>"
     for label, dates in holidays.items():
+        # Count total photos for this holiday across all years
+        holiday_photos = get_photos_by_holiday(photos, dates)
+        
+        # Create a link to view all photos for this holiday
+        holiday_links_html += f"<li><a href='/photos?holiday={urllib.parse.quote(label)}&lang={lang}'>{label} ({len(holiday_photos)} photos)</a></li>"
+        
+        # Check if today is this holiday
         for m, d in dates:
             if m == target_month and d == target_day:
                 holiday_html += f"<h4>{TRANSLATIONS[lang]['today_is']} {label}!</h4>"
-            # Make sure to include language when creating links
-            holiday_links_html += f"<li><a href='/photos?month={m}&day={d}&lang={lang}'>{label} – {d} {HEBREW_MONTHS[lang][m]}</a></li>"
+    
     holiday_links_html += "</ul>"
 
     suggestion_html = ""
@@ -458,12 +559,6 @@ def fetch_photos():
         <br><a href='/logout'>{TRANSLATIONS[lang]['logout']}</a>
         </body></html>
     """
-
-def get_query_string_with_lang(new_lang):
-    """Helper function to maintain all query parameters but change the language"""
-    params = request.args.copy()
-    params["lang"] = new_lang
-    return urllib.parse.urlencode(params)
 
 @app.route("/logout")
 def logout():

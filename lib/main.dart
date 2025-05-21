@@ -1,4 +1,3 @@
-// lib/main.dart
 import 'package:flutter/material.dart';
 import 'package:photo_manager/photo_manager.dart';
 import 'dart:typed_data';
@@ -27,43 +26,68 @@ class HebrewPhotoGallery extends StatefulWidget {
 }
 
 class _HebrewPhotoGalleryState extends State<HebrewPhotoGallery> {
-  Map<String, List<Uint8List>> groupedByHebrewDate = {};
+  Map<String, List<_PhotoData>> groupedByHebrewDate = {};
+  late HebrewDate todayHebrew;
 
   @override
   void initState() {
     super.initState();
-    _loadPhotos();
+    todayHebrew = HebrewDate.fromGregorian(DateTime.now());
+    _loadPhotosForHebrewDate(todayHebrew);
   }
 
-  Future<void> _loadPhotos() async {
+  Future<void> _loadPhotosForHebrewDate(HebrewDate targetHebrew) async {
     final permission = await PhotoManager.requestPermissionExtend();
     if (!permission.isAuth) return;
 
+    final range = HebrewDate.gDateRangeForHebrewDate(targetHebrew.month, targetHebrew.day);
+
     final albums = await PhotoManager.getAssetPathList(onlyAll: true);
     final recent = albums.first;
-    final assets = await recent.getAssetListPaged(page: 0, size: 100);
+    final assets = await recent.getAssetListRange(start: 0, end: 10000);
 
-    Map<String, List<Uint8List>> grouped = {};
+    Map<String, List<_PhotoData>> grouped = {};
 
     for (var asset in assets) {
-      final file = await asset.originBytes;
-      final date = asset.createDateTime;
+      final photoDate = asset.createDateTime;
+      if (photoDate.isBefore(range.start) || photoDate.isAfter(range.end)) continue;
 
-      final hebDate = HebrewDate.fromGregorian(date);
-      final label = "${hebDate.day} ${hebDate.monthName} ${hebDate.year}";
-
-      grouped.putIfAbsent(label, () => []).add(file!);
+      final heb = HebrewDate.fromGregorian(photoDate);
+      if (heb.day == targetHebrew.day && heb.month == targetHebrew.month) {
+        final bytes = await asset.originBytes;
+        final label = "${heb.day} ${heb.monthName} ${heb.year}";
+        grouped.putIfAbsent(label, () => []).add(_PhotoData(bytes!, photoDate, heb));
+      }
     }
 
-    setState(() {
-      groupedByHebrewDate = grouped;
-    });
+    setState(() => groupedByHebrewDate = grouped);
+  }
+
+  void _showPhotoFullscreen(_PhotoData photo) {
+    showDialog(
+      context: context,
+      builder: (_) => Dialog(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Image.memory(photo.bytes),
+            Padding(
+              padding: const EdgeInsets.all(8.0),
+              child: Text(
+                "📅 ${photo.heb.day} ${photo.heb.monthName} ${photo.heb.year}\n🗓 ${photo.gregorian.toLocal().toString().split(' ')[0]}\n🎉 ${photo.heb.holiday ?? ''}",
+                textAlign: TextAlign.center,
+              ),
+            )
+          ],
+        ),
+      ),
+    );
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('ChaiLights – Hebrew Dates')),
+      appBar: AppBar(title: const Text('ChaiLights – Hebrew Memories')),
       body: groupedByHebrewDate.isEmpty
           ? const Center(child: CircularProgressIndicator())
           : ListView(
@@ -71,11 +95,22 @@ class _HebrewPhotoGalleryState extends State<HebrewPhotoGallery> {
                 return ExpansionTile(
                   title: Text(entry.key),
                   children: entry.value
-                      .map((bytes) => Image.memory(bytes, height: 150))
+                      .map((photo) => GestureDetector(
+                            onTap: () => _showPhotoFullscreen(photo),
+                            child: Image.memory(photo.bytes, height: 150),
+                          ))
                       .toList(),
                 );
               }).toList(),
             ),
     );
   }
+}
+
+class _PhotoData {
+  final Uint8List bytes;
+  final DateTime gregorian;
+  final HebrewDate heb;
+
+  _PhotoData(this.bytes, this.gregorian, this.heb);
 }

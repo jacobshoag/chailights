@@ -2,6 +2,8 @@
 
 /// Accurate Hebrew calendar port from convertdate.hebrew
 /// Includes full logic for molad, Rosh Hashanah delay, and month lengths
+import 'package:flutter/material.dart';
+
 class HebrewDate {
   final int year;
   final int month;
@@ -106,5 +108,37 @@ class HebrewDate {
     if (m == 9 && d == 28) return 'Yom Yerushalayim';
 
     return null;
+  }
+
+  /// Return a date range for likely Gregorian match of a Hebrew date in current year
+  static DateTimeRange gDateRangeForHebrewDate(int hMonth, int hDay) {
+    final now = DateTime.now();
+    final currentYear = now.year;
+    DateTime? min;
+    DateTime? max;
+
+    for (int y = currentYear - 10; y <= currentYear + 10; y++) {
+      try {
+        final g = _gregorianFromHebrew(y, hMonth, hDay);
+        if (min == null || g.isBefore(min)) min = g;
+        if (max == null || g.isAfter(max)) max = g;
+      } catch (_) {}
+    }
+    return DateTimeRange(start: min ?? now, end: max ?? now);
+  }
+
+  static DateTime _gregorianFromHebrew(int year, int month, int day) {
+    final jd = _toJD(year, month, day).round();
+    int l = jd + 68569;
+    int n = (4 * l) ~/ 146097;
+    l = l - (146097 * n + 3) ~/ 4;
+    int i = (4000 * (l + 1)) ~/ 1461001;
+    l = l - (1461 * i) ~/ 4 + 31;
+    int j = (80 * l) ~/ 2447;
+    int d = l - (2447 * j) ~/ 80;
+    l = j ~/ 11;
+    int m = j + 2 - (12 * l);
+    int y = 100 * (n - 49) + i + l;
+    return DateTime(y, m, d);
   }
 }

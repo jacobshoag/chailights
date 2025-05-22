@@ -1,7 +1,5 @@
 // lib/hebrew_calendar.dart
 
-/// Accurate Hebrew calendar port from convertdate.hebrew
-/// Includes full logic for molad, Rosh Hashanah delay, and month lengths
 import 'package:flutter/material.dart';
 
 class HebrewDate {
@@ -36,10 +34,10 @@ class HebrewDate {
     int year = (jd - 347995).toInt() ~/ 366 + 1;
     while (jd >= _roshHashanah(year + 1)) year++;
     int month = 1;
-    while (jd > _toJD(year, month, lastDayOfHebrewMonth(year, month))) {
+    while (jd > _toJD(year, month, lastDayOfHebrewMonth(year, month)).round()) {
       month++;
     }
-    int day = jd - _toJD(year, month, 1) + 1;
+    int day = (jd - _toJD(year, month, 1)).round() + 1;
     return HebrewDate(year, month, day);
   }
 
@@ -66,13 +64,20 @@ class HebrewDate {
   static int daysInYear(int year) => _roshHashanah(year + 1) - _roshHashanah(year);
 
   static int _roshHashanah(int year) {
-    final monthsElapsed = ((235 * ((year - 1) ~/ 19)) + (12 * ((year - 1) % 19)) + (((7 * ((year - 1) % 19) + 1) ~/ 19))).toInt();
+    final monthsElapsed = ((235 * ((year - 1) ~/ 19)) +
+        (12 * ((year - 1) % 19)) +
+        (((7 * ((year - 1) % 19) + 1) ~/ 19))).toInt();
+
     final partsElapsed = 204 + 793 * (monthsElapsed % 1080);
-    final hoursElapsed = 5 + 12 * monthsElapsed + (793 * (monthsElapsed ~/ 1080)) + (partsElapsed ~/ 1080);
+    final hoursElapsed = 5 +
+        12 * monthsElapsed +
+        (793 * (monthsElapsed ~/ 1080)) +
+        (partsElapsed ~/ 1080);
     final day = 1 + 29 * monthsElapsed + (hoursElapsed ~/ 24);
     final parts = 1080 * (hoursElapsed % 24) + (partsElapsed % 1080);
 
     int roshHashanah = (HEBREW_EPOCH + day).floor();
+
     if (parts >= 19440 ||
         ((roshHashanah % 7) == 2 && parts >= 9924 && !isLeapYear(year)) ||
         ((roshHashanah % 7) == 1 && parts >= 16789 && isLeapYear(year - 1))) {
@@ -86,7 +91,6 @@ class HebrewDate {
 
   static bool isLeapYear(int year) => ((7 * year + 1) % 19) < 7;
 
-  /// Identify major holidays based on Hebrew date
   String? get holiday {
     final m = month;
     final d = day;
@@ -110,7 +114,6 @@ class HebrewDate {
     return null;
   }
 
-  /// Return a date range for likely Gregorian match of a Hebrew date in current year
   static DateTimeRange gDateRangeForHebrewDate(int hMonth, int hDay) {
     final now = DateTime.now();
     final currentYear = now.year;
@@ -124,6 +127,7 @@ class HebrewDate {
         if (max == null || g.isAfter(max)) max = g;
       } catch (_) {}
     }
+
     return DateTimeRange(start: min ?? now, end: max ?? now);
   }
 

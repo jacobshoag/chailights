@@ -1,3 +1,4 @@
+// lib/main.dart
 import 'package:flutter/material.dart';
 import 'package:photo_manager/photo_manager.dart';
 import 'dart:typed_data';
@@ -33,6 +34,7 @@ class _HebrewPhotoGalleryState extends State<HebrewPhotoGallery> {
   void initState() {
     super.initState();
     todayHebrew = HebrewDate.fromGregorian(DateTime.now());
+    print("Today is ${todayHebrew.day} ${todayHebrew.monthName} ${todayHebrew.year}");
     _loadPhotosForHebrewDate(todayHebrew);
   }
 
@@ -41,7 +43,6 @@ class _HebrewPhotoGalleryState extends State<HebrewPhotoGallery> {
     if (!permission.isAuth) return;
 
     final range = HebrewDate.gDateRangeForHebrewDate(targetHebrew.month, targetHebrew.day);
-
     final albums = await PhotoManager.getAssetPathList(onlyAll: true);
     final recent = albums.first;
     final assets = await recent.getAssetListRange(start: 0, end: 10000);
@@ -88,21 +89,34 @@ class _HebrewPhotoGalleryState extends State<HebrewPhotoGallery> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(title: const Text('ChaiLights – Hebrew Memories')),
-      body: groupedByHebrewDate.isEmpty
-          ? const Center(child: CircularProgressIndicator())
-          : ListView(
-              children: groupedByHebrewDate.entries.map((entry) {
-                return ExpansionTile(
-                  title: Text(entry.key),
-                  children: entry.value
-                      .map((photo) => GestureDetector(
-                            onTap: () => _showPhotoFullscreen(photo),
-                            child: Image.memory(photo.bytes, height: 150),
-                          ))
-                      .toList(),
-                );
-              }).toList(),
+      body: Column(
+        children: [
+          Padding(
+            padding: const EdgeInsets.all(12.0),
+            child: Text(
+              'Today is ${todayHebrew.day} ${todayHebrew.monthName} ${todayHebrew.year}',
+              style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
             ),
+          ),
+          Expanded(
+            child: groupedByHebrewDate.isEmpty
+                ? const Center(child: CircularProgressIndicator())
+                : ListView(
+                    children: groupedByHebrewDate.entries.map((entry) {
+                      return ExpansionTile(
+                        title: Text(entry.key),
+                        children: entry.value
+                            .map((photo) => GestureDetector(
+                                  onTap: () => _showPhotoFullscreen(photo),
+                                  child: Image.memory(photo.bytes, height: 150),
+                                ))
+                            .toList(),
+                      );
+                    }).toList(),
+                  ),
+          )
+        ],
+      ),
     );
   }
 }
